@@ -1,0 +1,493 @@
+import { Request, Response } from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import InterviewSessionModel from '../models/InterviewSession.js';
+import OllamaService from '../services/OllamaService.js';
+import { 
+  CreateSessionRequest, 
+  SendMessageRequest, 
+  SessionResponse,
+  AgenticPromptContext,
+  SessionState 
+} from '../types/InterviewTypes.js';
+
+export class InterviewController {
+  private ollamaService: OllamaService;
+
+  constructor() {
+    this.ollamaService = new OllamaService();
+  }
+
+  // Create a new interview session
+  createSession = async (req: Request<{}, SessionResponse, CreateSessionRequest>, res: Response): Promise<void> => {
+    try {
+      const {
+        candidateName,
+        candidateEmail,
+        role,
+        seniority,
+        interviewTypes,
+        company = 'Generic',
+        jobDescription,
+        durationMinutes = 30,
+        questionFamiliarity = 'mixed'
+      } = req.body;
+
+      // Validate required fields
+      if (!role || !seniority || !interviewTypes || interviewTypes.length === 0) {
+        res.status(400).json({
+          error: 'Missing required fields: role, seniority, and interviewTypes are required'
+        });
+        return;
+      }
+
+      // Test Ollama connection
+      const isOllamaConnected = await this.ollamaService.testConnection();
+      if (!isOllamaConnected) {
+        res.status(503).json({
+          error: 'AI service is currently unavailable. Please ensure Ollama is running.'
+        });
+        return;
+      }
+
+      const sessionId = uuidv4();
+      const now = new Date();
+
+      // Create session configuration
+      const config = {
+        role: role as any,
+        seniority: seniority as any,
+        interviewTypes: interviewTypes as any[],
+        company,
+        jobDescription,
+        durationMinutes,
+        questionFamiliarity: questionFamiliarity as any,
+        interviewMode: (req.body as any).interviewMode || 'mock'
+      };
+
+      // Create initial session state
+      const state: SessionState = {
+        phase: 'warmup',
+        currentQuestionIndex: 0,
+        questionsAsked: 0,
+        startTime: now,
+        lastActivity: now,
+        isActive: true
+      };
+
+      // Generate initial question using AI
+      const initialQuestion = await this.ollamaService.generateInitialQuestion(config);
+
+      // Create new session document
+      const session = new InterviewSessionModel({
+        sessionId,
+        candidateName,
+        candidateEmail,
+        config,
+        state,
+        messages: [{
+          role: 'assistant',
+          content: initialQuestion,
+          timestamp: now
+        }],
+        agenticDecisions: [],
+        createdAt: now,
+        updatedAt: now
+      });
+
+      await session.save();
+
+      res.status(201).json({
+        sessionId,
+        message: initialQuestion,
+        state,
+        evaluation: undefined
+      });
+
+    } catch (error) {
+      console.error('Error creating session:', error);
+      res.status(500).json({
+        error: 'Failed to create interview session'
+      });
+    }
+  };
+
+  // Send message and get AI response
+  sendMessage = async (req: Request<{}, SessionResponse, SendMessageRequest>, res: Response): Promise<void> => {
+    try {
+      const { sessionId, message } = req.body;
+
+      if (!sessionId || !message) {
+        res.status(400).json({
+          error: 'Missing required fields: sessionId and message are required'
+        });
+        return;
+      }
+
+      // Find the session
+      const session = await InterviewSessionModel.findOne({ sessionId });
+      if (!session) {
+        res.status(404).json({
+          error: 'Interview session not found'
+        });
+        return;
+      }
+
+      if (!session.state.isActive) {
+        res.status(400).json({
+          error: 'Interview session has ended'
+        });
+        return;
+      }
+
+      const now = new Date();
+
+      // Add user message to conversation
+      session.messages.push({
+        role: 'user',
+        content: message,
+        timestamp: now
+      });
+
+      // Update session activity
+      session.state.lastActivity = now;
+      session.state.questionsAsked += 1;
+
+      // Create context for agentic decision making
+      const context: AgenticPromptContext = {
+        config: session.config,
+        state: session.state,
+        recentMessages: session.messages.slice(-5), // Last 5 messages for context
+        questionHistory: session.messages
+          .filter(msg => msg.role === 'assistant')
+          .map(msg => msg.content)
+      };
+
+      let aiResponse: string = '';
+      let practiceEvaluation: any = null;
+      let shouldEndSession = false;
+
+      // First, analyze response for appropriateness and relevance
+      const lastQuestion = session.messages
+        .filter(msg => msg.role === 'assistant')
+        .pop()?.content || 'Previous question';
+
+      const contentAnalysis = await this.ollamaService.analyzeResponseApproppriateness(message, lastQuestion);
+      
+      // Track warning count in session metadata
+      let warningCount = 0;
+      if (session.agenticDecisions) {
+        warningCount = session.agenticDecisions.filter(d => d.decision === 'MODERATE').length;
+      }
+
+      // Handle inappropriate content or off-topic responses
+      if (!contentAnalysis.isAppropriate || !contentAnalysis.isOnTopic) {
+        const moderationResponse = await this.ollamaService.generateModerationResponse(
+          contentAnalysis,
+          warningCount,
+          lastQuestion
+        );
+
+        if (moderationResponse.shouldTerminate) {
+          session.state.isActive = false;
+          session.state.endTime = now;
+          session.state.phase = 'completed';
+          shouldEndSession = true;
+          
+          session.agenticDecisions.push({
+            timestamp: now,
+            decision: 'TERMINATE',
+            reasoning: 'Session terminated due to inappropriate behavior',
+            context: contentAnalysis.reason
+          });
+
+          aiResponse = moderationResponse.message;
+        } else if (moderationResponse.message) {
+          // Issue warning and redirect
+          session.agenticDecisions.push({
+            timestamp: now,
+            decision: 'MODERATE',
+            reasoning: 'Inappropriate or off-topic response detected',
+            context: contentAnalysis.reason
+          });
+
+          aiResponse = moderationResponse.message;
+        }
+      } else {
+        // Handle Practice Mode vs Mock Interview Mode for appropriate responses
+        if (session.config.interviewMode === 'practice') {
+          // Practice Mode: Provide immediate feedback and sample answers
+          const feedbackText = await this.ollamaService.generatePracticeFeedback(
+            session.config,
+            lastQuestion,
+            message
+          );
+
+          try {
+            practiceEvaluation = JSON.parse(feedbackText);
+            aiResponse = `Your Score: ${practiceEvaluation.score}/5
+
+Feedback: ${practiceEvaluation.feedback}
+
+Sample Answers:
+1. ${practiceEvaluation.sampleAnswers[0]}
+2. ${practiceEvaluation.sampleAnswers[1]}
+3. ${practiceEvaluation.sampleAnswers[2]}
+4. ${practiceEvaluation.sampleAnswers[3]}
+5. ${practiceEvaluation.sampleAnswers[4]}
+
+Improvements:
+• ${practiceEvaluation.improvements[0]}
+• ${practiceEvaluation.improvements[1]}
+• ${practiceEvaluation.improvements[2]}
+
+Next Question: ${practiceEvaluation.nextQuestion}`;
+
+          } catch (error) {
+            console.error('Failed to parse practice feedback:', error);
+            aiResponse = "Great answer! Let me ask you the next question...";
+          }
+
+        } else {
+          // Mock Interview Mode: Use existing agentic behavior
+          const decision = await this.ollamaService.makeAgenticDecision(context);
+          session.agenticDecisions.push(decision);
+
+          let newPhase = session.state.phase;
+
+          // Handle different decisions
+          switch (decision.decision) {
+            case 'WRAP_UP':
+              newPhase = 'wrap_up';
+              aiResponse = await this.ollamaService.generateNextQuestion(decision, context, session.messages);
+              shouldEndSession = true;
+              break;
+            
+            case 'CHANGE_PHASE':
+              newPhase = this.getNextPhase(session.state.phase);
+              session.state.phase = newPhase;
+              aiResponse = await this.ollamaService.generateNextQuestion(decision, context, session.messages);
+              break;
+            
+            default:
+              aiResponse = await this.ollamaService.generateNextQuestion(decision, context, session.messages);
+          }
+
+          // Update session state for mock interview
+          session.state.phase = newPhase;
+        }
+      }
+
+      // Add AI response to conversation (using proper Mongoose syntax)
+      session.messages.push({
+        role: 'assistant' as const,
+        content: aiResponse,
+        timestamp: now,
+        metadata: {
+          questionType: session.state.phase,
+          isFollowUp: session.config.interviewMode === 'practice',
+          evaluationScore: practiceEvaluation?.score
+        }
+      } as any);
+
+      // Check if interview should end
+      const shouldEndInterview = shouldEndSession || this.shouldEndInterview(session.state, session.config.durationMinutes);
+      
+      if (shouldEndInterview) {
+        session.state.isActive = false;
+        session.state.endTime = now;
+        session.state.phase = 'completed';
+
+        // Generate evaluation only if not already terminated
+        if (!shouldEndSession) {
+          const evaluationText = await this.ollamaService.generateEvaluation(
+            session.config,
+            session.messages
+          );
+
+          try {
+            const evaluation = JSON.parse(evaluationText);
+            session.evaluation = evaluation;
+          } catch (error) {
+            console.error('Failed to parse evaluation JSON:', error);
+            // Provide fallback evaluation
+            session.evaluation = {
+              overall: {
+                score: 3,
+                recommendation: 'Maybe',
+                strengths: ['Participated in the interview'],
+                improvements: ['Could provide more detailed responses'],
+                detailedFeedback: 'Thank you for completing the mock interview. Please review the conversation for areas of improvement.'
+              }
+            };
+          }
+        }
+      }
+
+      await session.save();
+
+      res.json({
+        sessionId,
+        message: aiResponse,
+        state: session.state,
+        evaluation: session.evaluation
+      });
+
+    } catch (error) {
+      console.error('Error processing message:', error);
+      res.status(500).json({
+        error: 'Failed to process message'
+      });
+    }
+  };
+
+  // Get session details
+  getSession = async (req: Request<{ sessionId: string }>, res: Response): Promise<void> => {
+    try {
+      const { sessionId } = req.params;
+
+      const session = await InterviewSessionModel.findOne({ sessionId });
+      if (!session) {
+        res.status(404).json({
+          error: 'Interview session not found'
+        });
+        return;
+      }
+
+      res.json({
+        sessionId: session.sessionId,
+        candidateName: session.candidateName,
+        config: session.config,
+        state: session.state,
+        messages: session.messages,
+        evaluation: session.evaluation,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt
+      });
+
+    } catch (error) {
+      console.error('Error fetching session:', error);
+      res.status(500).json({
+        error: 'Failed to fetch session'
+      });
+    }
+  };
+
+  // Get session evaluation
+  getEvaluation = async (req: Request<{ sessionId: string }>, res: Response): Promise<void> => {
+    try {
+      const { sessionId } = req.params;
+
+      const session = await InterviewSessionModel.findOne({ sessionId });
+      if (!session) {
+        res.status(404).json({
+          error: 'Interview session not found'
+        });
+        return;
+      }
+
+      if (!session.evaluation) {
+        res.status(400).json({
+          error: 'Evaluation not yet available. Complete the interview first.'
+        });
+        return;
+      }
+
+      res.json({
+        sessionId,
+        evaluation: session.evaluation,
+        transcript: session.messages,
+        config: session.config
+      });
+
+    } catch (error) {
+      console.error('Error fetching evaluation:', error);
+      res.status(500).json({
+        error: 'Failed to fetch evaluation'
+      });
+    }
+  };
+
+  // Get role configuration data
+  getRoleConfig = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const roleConfig = {
+        'Software Engineer': {
+          seniorities: ['Intern', 'Junior', 'Mid-Level', 'Senior', 'Staff', 'Principal', 'Distinguished'],
+          interviewTypes: ['Behavioral', 'Technical', 'System Design', 'Coding']
+        },
+        'Product Manager': {
+          seniorities: ['Associate PM', 'PM', 'Senior PM', 'Principal PM', 'Director', 'VP Product'],
+          interviewTypes: ['Behavioral', 'Product Sense', 'Case Study', 'Strategy', 'Leadership']
+        },
+        'Sales Representative': {
+          seniorities: ['Sales Associate', 'Account Executive', 'Senior AE', 'Territory Manager', 'Regional Manager', 'Country Manager', 'Global Head'],
+          interviewTypes: ['Behavioral', 'Sales Roleplay', 'Case Study', 'Negotiation']
+        },
+        'Marketing Manager': {
+          seniorities: ['Marketing Associate', 'Marketing Manager', 'Senior Manager', 'Director', 'VP Marketing', 'CMO'],
+          interviewTypes: ['Behavioral', 'Case Study', 'Strategy', 'Campaign Planning', 'Leadership']
+        },
+        'Data Scientist': {
+          seniorities: ['Junior Data Scientist', 'Data Scientist', 'Senior Data Scientist', 'Staff Data Scientist', 'Principal Data Scientist', 'Director'],
+          interviewTypes: ['Behavioral', 'Technical', 'Case Study', 'Statistics & ML', 'Coding']
+        },
+        'Designer': {
+          seniorities: ['Junior Designer', 'Product Designer', 'Senior Designer', 'Staff Designer', 'Principal Designer', 'Design Director'],
+          interviewTypes: ['Behavioral', 'Portfolio Review', 'Design Challenge', 'Case Study']
+        },
+        'Consultant': {
+          seniorities: ['Analyst', 'Associate', 'Senior Associate', 'Manager', 'Senior Manager', 'Principal', 'Partner'],
+          interviewTypes: ['Behavioral', 'Case Study', 'Problem Solving', 'Client Interaction']
+        },
+        'Other': {
+          seniorities: ['Entry Level', 'Mid Level', 'Senior Level', 'Leadership'],
+          interviewTypes: ['Behavioral', 'Technical', 'Case Study']
+        }
+      };
+
+      res.json(roleConfig);
+    } catch (error) {
+      console.error('Error fetching role config:', error);
+      res.status(500).json({
+        error: 'Failed to fetch role configuration'
+      });
+    }
+  };
+
+  // Health check for Ollama service
+  healthCheck = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const isConnected = await this.ollamaService.testConnection();
+      res.json({
+        status: isConnected ? 'healthy' : 'unhealthy',
+        ollama: isConnected ? 'connected' : 'disconnected',
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      res.status(500).json({
+        status: 'error',
+        error: 'Health check failed'
+      });
+    }
+  };
+
+  // Helper methods
+  private getNextPhase(currentPhase: string): SessionState['phase'] {
+    const phases: SessionState['phase'][] = ['warmup', 'behavioral', 'technical', 'system_design', 'product', 'wrap_up'];
+    const currentIndex = phases.indexOf(currentPhase as SessionState['phase']);
+    return phases[currentIndex + 1] || 'wrap_up';
+  }
+
+  private shouldEndInterview(state: SessionState, durationMinutes: number): boolean {
+    if (!state.startTime) return false;
+    
+    const elapsedMinutes = (Date.now() - state.startTime.getTime()) / (1000 * 60);
+    const maxQuestions = Math.max(6, Math.min(12, Math.floor(durationMinutes / 4)));
+    
+    return elapsedMinutes >= durationMinutes || 
+           state.questionsAsked >= maxQuestions ||
+           state.phase === 'completed';
+  }
+}
+
+export default InterviewController;

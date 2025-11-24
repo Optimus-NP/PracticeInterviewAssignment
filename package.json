@@ -1,0 +1,39 @@
+{
+  "name": "interview-practice-partner",
+  "version": "1.0.0",
+  "description": "AI-powered Interview Practice Partner using MERN stack + LangChain.js + Docker Ollama",
+  "main": "server/dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run server:dev\" \"npm run client:dev\"",
+    "server:dev": "cd server && npm run dev",
+    "server:build": "cd server && npm run build",
+    "server:start": "cd server && npm start",
+    "client:dev": "cd client && npm run dev",
+    "client:build": "cd client && npm run build",
+    "client:preview": "cd client && npm run preview",
+    "build": "npm run server:build && npm run client:build",
+    "start": "npm run server:start",
+    "setup": "npm install && cd server && npm install && cd ../client && npm install",
+    "docker:start": "docker-compose up -d",
+    "docker:stop": "docker-compose down",
+    "docker:restart": "docker-compose restart",
+    "docker:logs": "docker-compose logs -f ollama",
+    "health": "curl -s http://localhost:5000/health || echo 'Server not running'",
+    "clean": "rm -rf server/dist client/dist node_modules server/node_modules client/node_modules",
+    "lint": "cd server && npm run build && cd ../client && npm run lint"
+  },
+  "dependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["interview", "ai", "mern", "langchain", "ollama", "mongodb", "typescript"],
+  "author": "Naman",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Optimus-NP/PracticeInterviewAssignment.git"
+  }
+}
