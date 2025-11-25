@@ -57,56 +57,54 @@ export class OllamaService implements ILLMService {
     return await this.llm.invoke(promptText);
   }
 
-  // Check for inappropriate content or off-topic responses
-  async analyzeResponseApproppriateness(response: string, question: string): Promise<{
+  // Check for inappropriate content using LLM
+  async analyzeResponseApproppriateness(
+    response: string, 
+    question: string,
+    previousWarnings: number = 0,
+    recentHistory?: string
+  ): Promise<{
     isAppropriate: boolean;
     isOnTopic: boolean;
     containsProfanity: boolean;
     severity: 'low' | 'medium' | 'high';
     reason: string;
   }> {
-    // Only flag truly problematic content to avoid false positives
-    const profanityPatterns = [
-      /\bf\*?u\*?c\*?k/i, /\bs\*?h\*?i\*?t/i, /\bb\*?i\*?t\*?c\*?h/i, 
-      /\ba\*?s\*?s\*?h\*?o\*?l\*?e/i, /\bd\*?a\*?m\*?n/i
-    ];
-    
-    const hasProfanity = profanityPatterns.some(pattern => pattern.test(response));
-    
-    // Check for completely random responses (very short nonsense)
-    const isVeryShortNonsense = response.trim().length < 10 && 
-      !/[a-zA-Z]{3,}/.test(response) && 
-      response.includes('jklsdf') || response.includes('asdf') || response.includes('qwerty');
-    
-    // Be more lenient - only flag severe issues
-    if (hasProfanity) {
+    try {
+      // Use LLM for intelligent content moderation
+      const promptText = InterviewPrompts.analyzeContentModeration(response, question, previousWarnings, recentHistory);
+      const moderationResult = await this.llm.invoke(promptText);
+      
+      const analysis = JSON.parse(moderationResult);
+      
+      // Log if inappropriate content detected
+      if (!analysis.isAppropriate || analysis.containsProfanity || analysis.isAbusive) {
+        console.log('[MODERATION] Inappropriate content detected:', {
+          reason: analysis.reason,
+          flaggedWords: analysis.flaggedWords,
+          severity: analysis.severity
+        });
+      }
+      
       return {
-        isAppropriate: false,
-        isOnTopic: true,
-        containsProfanity: true,
-        severity: 'high',
-        reason: 'Contains inappropriate language'
+        isAppropriate: analysis.isAppropriate && !analysis.containsProfanity && !analysis.isAbusive,
+        isOnTopic: analysis.isOnTopic,
+        containsProfanity: analysis.containsProfanity || analysis.isAbusive,
+        severity: analysis.severity || 'low',
+        reason: analysis.reason || 'Response appears appropriate'
       };
-    }
-    
-    if (isVeryShortNonsense) {
+    } catch (error) {
+      console.error('[MODERATION] Error analyzing content, defaulting to safe:', error);
+      // Fallback: be conservative and flag if very short or suspicious
+      const isSuspicious = response.trim().length < 5;
       return {
-        isAppropriate: true,
-        isOnTopic: false,
+        isAppropriate: !isSuspicious,
+        isOnTopic: !isSuspicious,
         containsProfanity: false,
-        severity: 'low',
-        reason: 'Response appears to be random characters'
+        severity: isSuspicious ? 'medium' : 'low',
+        reason: isSuspicious ? 'Very short response' : 'Unable to analyze, assumed appropriate'
       };
     }
-    
-    // Default to appropriate for normal responses
-    return {
-      isAppropriate: true,
-      isOnTopic: true,
-      containsProfanity: false,
-      severity: 'low',
-      reason: 'Response appears appropriate'
-    };
   }
 
   // Generate response for handling inappropriate content

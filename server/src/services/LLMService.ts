@@ -7,7 +7,12 @@ export interface ILLMService {
   testConnection(): Promise<boolean>;
   generateInterviewPlan(config: SessionConfig): Promise<InterviewPlan>;
   generateInitialQuestion(config: SessionConfig, candidateName?: string): Promise<string>;
-  analyzeResponseApproppriateness(response: string, question: string): Promise<{
+  analyzeResponseApproppriateness(
+    response: string, 
+    question: string,
+    previousWarnings?: number,
+    recentHistory?: string
+  ): Promise<{
     isAppropriate: boolean;
     isOnTopic: boolean;
     containsProfanity: boolean;
@@ -121,9 +126,14 @@ export class LLMService implements ILLMService {
     return await service.generateInitialQuestion(config, candidateName);
   }
 
-  async analyzeResponseApproppriateness(response: string, question: string) {
+  async analyzeResponseApproppriateness(
+    response: string, 
+    question: string,
+    previousWarnings?: number,
+    recentHistory?: string
+  ) {
     const service = await this.getService();
-    return await service.analyzeResponseApproppriateness(response, question);
+    return await service.analyzeResponseApproppriateness(response, question, previousWarnings, recentHistory);
   }
 
   async generateModerationResponse(analysis: any, warningCount: number, question: string) {

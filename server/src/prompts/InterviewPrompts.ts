@@ -399,6 +399,46 @@ Do NOT mention any time estimates or durations.`;
   }
 
   /**
+   * Analyze content for appropriateness using LLM with conversation history
+   */
+  static analyzeContentModeration(response: string, question: string, previousWarnings: number, recentHistory?: string): string {
+    return `You are a content moderation system. Analyze if the following response contains inappropriate content.
+
+${recentHistory ? `Recent Conversation:\n${recentHistory}\n` : ''}
+
+Question Asked: ${question}
+
+Candidate's Response: "${response}"
+
+Previous Warnings Issued: ${previousWarnings}
+
+Analyze for:
+1. **Profanity**: Swear words, vulgar language, explicit content  
+2. **Abusive Language**: Insults (stupid, idiot, fool, dumb), harassment, threats, hate speech, disrespectful behavior
+3. **Off-Topic**: Completely unrelated or nonsensical responses
+
+Be contextually aware:
+- Technical terms (e.g., "git", "assembly", "kill process") are acceptable
+- Industry jargon is fine
+- Only flag genuinely inappropriate, disrespectful, or abusive content
+
+IMPORTANT: If previous warnings = 1, be more strict - this is the final chance.
+
+CRITICAL: Respond with ONLY valid JSON, no extra text before or after.
+
+{
+  "isAppropriate": true,
+  "containsProfanity": false,
+  "isAbusive": false,
+  "isOnTopic": true,
+  "severity": "low",
+  "reason": "Brief explanation",
+  "flaggedWords": [],
+  "recommendation": "continue"
+}`;
+  }
+
+  /**
    * Generate next question
    */
   static generateNextQuestion(config: SessionConfig, phase: string): string {

@@ -172,16 +172,30 @@ export class InterviewController {
         .filter(msg => msg.role === 'assistant')
         .pop()?.content || 'Previous question';
 
-      const contentAnalysis = await this.llmService.analyzeResponseApproppriateness(message, lastQuestion);
-      
-      // Track warning count in session metadata
-      let warningCount = 0;
-      if (session.agenticDecisions) {
-        warningCount = session.agenticDecisions.filter(d => d.decision === 'MODERATE').length;
-      }
+      // Track warning count
+      const warningCount = session.agenticDecisions 
+        ? session.agenticDecisions.filter(d => d.decision === 'MODERATE').length 
+        : 0;
+
+      // Get recent conversation history for context
+      const recentHistory = session.messages
+        .slice(-6) // Last 3 exchanges (6 messages)
+        .map(msg => `${msg.role === 'user' ? 'Candidate' : 'Interviewer'}: ${msg.content}`)
+        .join('\n');
+
+      // Use LLM for intelligent content moderation with full context
+      console.log(`[MODERATION] Analyzing message: "${message.substring(0, 50)}..."`);
+      const contentAnalysis = await this.llmService.analyzeResponseApproppriateness(
+        message, 
+        lastQuestion,
+        warningCount,
+        recentHistory
+      );
+      console.log('[MODERATION] Analysis result:', JSON.stringify(contentAnalysis, null, 2));
 
       // Handle inappropriate content or off-topic responses
-      if (!contentAnalysis.isAppropriate || !contentAnalysis.isOnTopic) {
+      if (!contentAnalysis.isAppropriate || contentAnalysis.containsProfanity) {
+        console.log('[MODERATION] TRIGGERED - Handling inappropriate content');
         const moderationResponse = await this.llmService.generateModerationResponse(
           contentAnalysis,
           warningCount,
