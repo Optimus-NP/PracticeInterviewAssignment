@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import InterviewSessionModel from '../models/InterviewSession.js';
-import OllamaService from '../services/OllamaService.js';
+import LLMService from '../services/LLMService.js';
 import { 
   CreateSessionRequest, 
   SendMessageRequest, 
@@ -11,10 +11,10 @@ import {
 } from '../types/InterviewTypes.js';
 
 export class InterviewController {
-  private ollamaService: OllamaService;
+  private llmService: LLMService;
 
   constructor() {
-    this.ollamaService = new OllamaService();
+    this.llmService = new LLMService();
   }
 
   // Create a new interview session
@@ -40,11 +40,11 @@ export class InterviewController {
         return;
       }
 
-      // Test Ollama connection
-      const isOllamaConnected = await this.ollamaService.testConnection();
-      if (!isOllamaConnected) {
+      // Test LLM service connection
+      const isConnected = await this.llmService.testConnection();
+      if (!isConnected) {
         res.status(503).json({
-          error: 'AI service is currently unavailable. Please ensure Ollama is running.'
+          error: 'AI service is currently unavailable. Please check your LLM configuration.'
         });
         return;
       }
@@ -75,7 +75,7 @@ export class InterviewController {
       };
 
       // Generate initial question using AI
-      const initialQuestion = await this.ollamaService.generateInitialQuestion(config);
+      const initialQuestion = await this.llmService.generateInitialQuestion(config, candidateName);
 
       // Create new session document
       const session = new InterviewSessionModel({
@@ -146,7 +146,7 @@ export class InterviewController {
         role: 'user',
         content: message,
         timestamp: now
-      });
+      } as any);
 
       // Update session activity
       session.state.lastActivity = now;
@@ -156,10 +156,11 @@ export class InterviewController {
       const context: AgenticPromptContext = {
         config: session.config,
         state: session.state,
-        recentMessages: session.messages.slice(-5), // Last 5 messages for context
+        recentMessages: session.messages.slice(-5), // Last 5 messages for quick context
         questionHistory: session.messages
           .filter(msg => msg.role === 'assistant')
-          .map(msg => msg.content)
+          .map(msg => msg.content),
+        fullConversationHistory: session.messages // Full history for wrap-up and evaluations
       };
 
       let aiResponse: string = '';
@@ -171,7 +172,7 @@ export class InterviewController {
         .filter(msg => msg.role === 'assistant')
         .pop()?.content || 'Previous question';
 
-      const contentAnalysis = await this.ollamaService.analyzeResponseApproppriateness(message, lastQuestion);
+      const contentAnalysis = await this.llmService.analyzeResponseApproppriateness(message, lastQuestion);
       
       // Track warning count in session metadata
       let warningCount = 0;
@@ -181,7 +182,7 @@ export class InterviewController {
 
       // Handle inappropriate content or off-topic responses
       if (!contentAnalysis.isAppropriate || !contentAnalysis.isOnTopic) {
-        const moderationResponse = await this.ollamaService.generateModerationResponse(
+        const moderationResponse = await this.llmService.generateModerationResponse(
           contentAnalysis,
           warningCount,
           lastQuestion
@@ -216,7 +217,7 @@ export class InterviewController {
         // Handle Practice Mode vs Mock Interview Mode for appropriate responses
         if (session.config.interviewMode === 'practice') {
           // Practice Mode: Provide immediate feedback and sample answers
-          const feedbackText = await this.ollamaService.generatePracticeFeedback(
+          const feedbackText = await this.llmService.generatePracticeFeedback(
             session.config,
             lastQuestion,
             message
@@ -249,27 +250,46 @@ Next Question: ${practiceEvaluation.nextQuestion}`;
 
         } else {
           // Mock Interview Mode: Use existing agentic behavior
-          const decision = await this.ollamaService.makeAgenticDecision(context);
+          const decision = await this.llmService.makeAgenticDecision(context);
           session.agenticDecisions.push(decision);
+
+          // Log the decision for debugging
+          const elapsedMinutes = session.state.startTime 
+            ? (Date.now() - session.state.startTime.getTime()) / (1000 * 60)
+            : 0;
+          console.log(`[AGENTIC] Decision: ${decision.decision}, Elapsed: ${elapsedMinutes.toFixed(1)}min, Questions: ${session.state.questionsAsked}, Reasoning: ${decision.reasoning}`);
 
           let newPhase = session.state.phase;
 
           // Handle different decisions
           switch (decision.decision) {
             case 'WRAP_UP':
-              newPhase = 'wrap_up';
-              aiResponse = await this.ollamaService.generateNextQuestion(decision, context, session.messages);
-              shouldEndSession = true;
+              // Only allow wrap-up if sufficient time has passed OR enough questions asked
+              if (elapsedMinutes >= session.config.durationMinutes * 0.8 || session.state.questionsAsked >= Math.ceil(session.config.durationMinutes / 5)) {
+                newPhase = 'wrap_up';
+                aiResponse = await this.llmService.generateNextQuestion(decision, context, session.messages);
+                shouldEndSession = true;
+                console.log(`[AGENTIC] Wrapping up - Elapsed: ${elapsedMinutes.toFixed(1)}min of ${session.config.durationMinutes}min`);
+              } else {
+                // Override premature wrap-up decision
+                console.log(`[AGENTIC] Overriding premature WRAP_UP - Only ${elapsedMinutes.toFixed(1)}min elapsed of ${session.config.durationMinutes}min`);
+                newPhase = session.state.phase; // Stay in current phase
+                aiResponse = await this.llmService.generateNextQuestion(
+                  { ...decision, decision: 'MOVE_NEXT' },
+                  context,
+                  session.messages
+                );
+              }
               break;
             
             case 'CHANGE_PHASE':
               newPhase = this.getNextPhase(session.state.phase);
               session.state.phase = newPhase;
-              aiResponse = await this.ollamaService.generateNextQuestion(decision, context, session.messages);
+              aiResponse = await this.llmService.generateNextQuestion(decision, context, session.messages);
               break;
             
             default:
-              aiResponse = await this.ollamaService.generateNextQuestion(decision, context, session.messages);
+              aiResponse = await this.llmService.generateNextQuestion(decision, context, session.messages);
           }
 
           // Update session state for mock interview
@@ -299,7 +319,7 @@ Next Question: ${practiceEvaluation.nextQuestion}`;
 
         // Generate evaluation only if not already terminated
         if (!shouldEndSession) {
-          const evaluationText = await this.ollamaService.generateEvaluation(
+          const evaluationText = await this.llmService.generateEvaluation(
             session.config,
             session.messages
           );
@@ -454,13 +474,15 @@ Next Question: ${practiceEvaluation.nextQuestion}`;
     }
   };
 
-  // Health check for Ollama service
+  // Health check for LLM service
   healthCheck = async (req: Request, res: Response): Promise<void> => {
     try {
-      const isConnected = await this.ollamaService.testConnection();
+      const isConnected = await this.llmService.testConnection();
+      const serviceName = await this.llmService.getActiveServiceName();
       res.json({
         status: isConnected ? 'healthy' : 'unhealthy',
-        ollama: isConnected ? 'connected' : 'disconnected',
+        llmService: serviceName,
+        connected: isConnected,
         timestamp: new Date().toISOString()
       });
     } catch (error) {

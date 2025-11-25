@@ -16,13 +16,6 @@ interface InterviewConfig {
   interviewMode: 'practice' | 'mock'; // NEW: Practice vs Mock Interview mode
 }
 
-interface PracticeEvaluation {
-  score: number;
-  feedback: string;
-  sampleAnswers: string[];
-  improvements: string[];
-}
-
 // Role configuration interface
 interface RoleConfig {
   [role: string]: {
@@ -172,7 +165,7 @@ function App() {
       const response = await fetch('/health');
       if (response.ok) {
         const data = await response.json();
-        setApiStatus(data.ollama === 'connected' ? 'connected' : 'disconnected');
+        setApiStatus(data.connected ? 'connected' : 'disconnected');
       } else {
         setApiStatus('disconnected');
       }
@@ -238,6 +231,8 @@ function App() {
 
   const sendMessage = async () => {
     if (!currentMessage.trim() || !sessionId) return;
+    
+    console.log('[DEBUG] Starting sendMessage...');
 
     const userMessage: Message = {
       role: 'user',
@@ -246,10 +241,26 @@ function App() {
     };
 
     setMessages(prev => [...prev, userMessage]);
+    const messageToSend = currentMessage; // Save before clearing
     setCurrentMessage('');
     setIsLoading(true);
+    console.log('[DEBUG] isLoading set to TRUE');
+
+    // Aggressive timeout to prevent stuck loading state
+    const safetyTimeout = setTimeout(() => {
+      console.error('[DEBUG] SAFETY TIMEOUT - Force resetting loading state');
+      setIsLoading(false);
+      alert('Request took too long. Input has been re-enabled.');
+    }, 30000); // 30 second safety timeout
 
     try {
+      const controller = new AbortController();
+      const fetchTimeout = setTimeout(() => {
+        console.log('[DEBUG] Aborting fetch due to timeout');
+        controller.abort();
+      }, 25000); // 25 second fetch timeout
+
+      console.log('[DEBUG] Sending request to server...');
       const response = await fetch('/api/sessions/message', {
         method: 'POST',
         headers: {
@@ -257,15 +268,20 @@ function App() {
         },
         body: JSON.stringify({
           sessionId,
-          message: currentMessage
+          message: messageToSend
         }),
+        signal: controller.signal
       });
+
+      clearTimeout(fetchTimeout);
+      console.log('[DEBUG] Response received, status:', response.status);
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
       const data = await response.json();
+      console.log('[DEBUG] Data parsed successfully');
       
       const assistantMessage: Message = {
         role: 'assistant',
@@ -275,21 +291,38 @@ function App() {
 
       setMessages(prev => [...prev, assistantMessage]);
       setSessionState(data.state);
-
-      // Speak AI response if voice mode is enabled
-      await speakAIResponse(data.message);
+      console.log('[DEBUG] Messages and state updated');
 
       // Check if interview completed
       if (data.evaluation) {
+        console.log('[DEBUG] Evaluation received, switching to evaluation screen');
         setEvaluation(data.evaluation);
         setCurrentStep('evaluation');
       }
 
-    } catch (error) {
-      console.error('Error sending message:', error);
-      alert('Failed to send message. Please try again.');
+      // Speak AI response if voice mode is enabled (non-blocking)
+      speakAIResponse(data.message).catch(err => {
+        console.error('[DEBUG] Error speaking response (non-blocking):', err);
+      });
+
+    } catch (error: any) {
+      console.error('[DEBUG] Error in sendMessage:', error);
+      if (error.name === 'AbortError') {
+        alert('Request timed out. The AI is taking too long to respond. Please try again.');
+      } else {
+        alert('Failed to send message. Please check the console and try again.');
+      }
+      // Restore message so user doesn't lose their input
+      setCurrentMessage(messageToSend);
     } finally {
+      clearTimeout(safetyTimeout);
+      console.log('[DEBUG] Finally block - setting isLoading to FALSE');
       setIsLoading(false);
+      
+      // Force a small delay to ensure state updates
+      setTimeout(() => {
+        console.log('[DEBUG] Double-check - isLoading should be false now');
+      }, 100);
     }
   };
 
@@ -308,13 +341,6 @@ function App() {
     setCurrentMessage('');
     setSessionState(null);
     setEvaluation(null);
-  };
-
-  const clearSavedSession = () => {
-    if (confirm('Are you sure you want to clear your saved session? This cannot be undone.')) {
-      localStorage.removeItem('interviewSession');
-      window.location.reload();
-    }
   };
 
   if (currentStep === 'setup') {
@@ -560,17 +586,29 @@ function App() {
 
           <div className="chat-container">
             <div className="messages">
-              {messages.map((message, index) => (
-                <div key={index} className={`message ${message.role}`}>
-                  <div className="message-header">
-                    <strong>{message.role === 'user' ? 'You' : 'AI Interviewer'}</strong>
-                    <span className="timestamp">
-                      {new Date(message.timestamp).toLocaleTimeString()}
-                    </span>
+              {messages.map((message, index) => {
+                // Calculate elapsed time from previous message
+                let elapsedTime = '';
+                if (index > 0) {
+                  const prevTime = new Date(messages[index - 1].timestamp).getTime();
+                  const currTime = new Date(message.timestamp).getTime();
+                  const secondsElapsed = Math.round((currTime - prevTime) / 1000);
+                  elapsedTime = `+${secondsElapsed}s`;
+                }
+                
+                return (
+                  <div key={index} className={`message ${message.role}`}>
+                    <div className="message-header">
+                      <strong>{message.role === 'user' ? 'You' : 'AI Interviewer'}</strong>
+                      <span className="timestamp">
+                        {new Date(message.timestamp).toLocaleTimeString()}
+                        {elapsedTime && <span className="elapsed-time" title="Time since last message"> ({elapsedTime})</span>}
+                      </span>
+                    </div>
+                    <div className="message-content">{message.content}</div>
                   </div>
-                  <div className="message-content">{message.content}</div>
-                </div>
-              ))}
+                );
+              })}
               {isLoading && (
                 <div className="message assistant">
                   <div className="message-header">

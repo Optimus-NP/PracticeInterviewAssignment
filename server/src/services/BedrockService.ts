@@ -1,43 +1,43 @@
-import { Ollama } from '@langchain/community/llms/ollama';
-import { PromptTemplate } from '@langchain/core/prompts';
+import {
+  BedrockRuntimeClient,
+  InvokeModelCommand,
+  InvokeModelCommandInput,
+} from '@aws-sdk/client-bedrock-runtime';
 import { AgenticPromptContext, SessionConfig, SessionState, Message, AgenticDecision, InterviewPlan } from '../types/InterviewTypes.js';
 import { ILLMService } from './LLMService.js';
 import InterviewPrompts from '../prompts/InterviewPrompts.js';
-import axios from 'axios';
 
-export class OllamaService implements ILLMService {
-  private llm: Ollama;
-  private baseUrl: string;
-  private model: string;
+export class BedrockService implements ILLMService {
+  private client: BedrockRuntimeClient;
+  private modelId: string;
+  private region: string;
 
   constructor() {
-    this.baseUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
-    this.model = process.env.OLLAMA_MODEL || 'llama2:7b';
-    
-    this.llm = new Ollama({
-      baseUrl: this.baseUrl,
-      model: this.model,
-      temperature: 0.7,
-      topP: 0.9,
-      topK: 40,
+    this.region = process.env.AWS_REGION || 'us-west-2';
+    this.modelId = process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-5-sonnet-20241022-v2:0';
+
+    // Initialize Bedrock client - credentials loaded from environment or AWS config
+    this.client = new BedrockRuntimeClient({
+      region: this.region,
     });
   }
 
-  // Test connection to Ollama
+  // Test connection to Bedrock
   async testConnection(): Promise<boolean> {
     try {
-      const response = await axios.get(`${this.baseUrl}/api/tags`);
-      return response.status === 200;
+      const testPrompt = 'Hello, please respond with "OK" if you receive this message.';
+      const response = await this.invokeModel(testPrompt);
+      return response.length > 0;
     } catch (error) {
-      console.error('Ollama connection failed:', error);
+      console.error('Bedrock connection failed:', error);
       return false;
     }
   }
 
   // Generate comprehensive interview plan tailored to role and seniority
   async generateInterviewPlan(config: SessionConfig): Promise<InterviewPlan> {
-    const promptText = InterviewPrompts.generateInterviewPlan(config);
-    const response = await this.llm.invoke(promptText);
+    const prompt = InterviewPrompts.generateInterviewPlan(config);
+    const response = await this.invokeModel(prompt, 4096);
     
     try {
       const planData = JSON.parse(response);
@@ -51,10 +51,50 @@ export class OllamaService implements ILLMService {
     }
   }
 
+  // Core method to invoke Bedrock model
+  private async invokeModel(prompt: string, maxTokens: number = 2048): Promise<string> {
+    try {
+      const payload = {
+        anthropic_version: 'bedrock-2023-05-31',
+        max_tokens: maxTokens,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: 0.7,
+        top_p: 0.9,
+      };
+
+      const input: InvokeModelCommandInput = {
+        modelId: this.modelId,
+        contentType: 'application/json',
+        accept: 'application/json',
+        body: JSON.stringify(payload),
+      };
+
+      const command = new InvokeModelCommand(input);
+      const response = await this.client.send(command);
+
+      const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+      
+      // Extract text from Claude's response format
+      if (responseBody.content && responseBody.content.length > 0) {
+        return responseBody.content[0].text;
+      }
+
+      return '';
+    } catch (error) {
+      console.error('Error invoking Bedrock model:', error);
+      throw error;
+    }
+  }
+
   // Generate initial interview question based on config
   async generateInitialQuestion(config: SessionConfig, candidateName?: string): Promise<string> {
-    const promptText = InterviewPrompts.generateInitialQuestion(config, candidateName);
-    return await this.llm.invoke(promptText);
+    const prompt = InterviewPrompts.generateInitialQuestion(config, candidateName);
+    return await this.invokeModel(prompt);
   }
 
   // Check for inappropriate content or off-topic responses
@@ -67,17 +107,17 @@ export class OllamaService implements ILLMService {
   }> {
     // Only flag truly problematic content to avoid false positives
     const profanityPatterns = [
-      /\bf\*?u\*?c\*?k/i, /\bs\*?h\*?i\*?t/i, /\bb\*?i\*?t\*?c\*?h/i, 
+      /\bf\*?u\*?c\*?k/i, /\bs\*?h\*?i\*?t/i, /\bb\*?i\*?t\*?c\*?h/i,
       /\ba\*?s\*?s\*?h\*?o\*?l\*?e/i, /\bd\*?a\*?m\*?n/i
     ];
-    
+
     const hasProfanity = profanityPatterns.some(pattern => pattern.test(response));
-    
+
     // Check for completely random responses (very short nonsense)
-    const isVeryShortNonsense = response.trim().length < 10 && 
-      !/[a-zA-Z]{3,}/.test(response) && 
-      response.includes('jklsdf') || response.includes('asdf') || response.includes('qwerty');
-    
+    const isVeryShortNonsense = response.trim().length < 10 &&
+      !/[a-zA-Z]{3,}/.test(response) &&
+      (response.includes('jklsdf') || response.includes('asdf') || response.includes('qwerty'));
+
     // Be more lenient - only flag severe issues
     if (hasProfanity) {
       return {
@@ -88,7 +128,7 @@ export class OllamaService implements ILLMService {
         reason: 'Contains inappropriate language'
       };
     }
-    
+
     if (isVeryShortNonsense) {
       return {
         isAppropriate: true,
@@ -98,7 +138,7 @@ export class OllamaService implements ILLMService {
         reason: 'Response appears to be random characters'
       };
     }
-    
+
     // Default to appropriate for normal responses
     return {
       isAppropriate: true,
@@ -117,7 +157,7 @@ export class OllamaService implements ILLMService {
   ): Promise<{ message: string; shouldTerminate: boolean }> {
     if (analysis.containsProfanity || analysis.severity === 'high') {
       warningCount++;
-      
+
       if (warningCount >= 2) {
         return {
           message: "I need to end our interview session here. Professional communication is required for interview practice. Thank you for your time.",
@@ -154,7 +194,7 @@ Could you please provide a response that specifically addresses this question ab
       ? (Date.now() - context.state.startTime.getTime()) / (1000 * 60)
       : 0;
     
-    const promptText = InterviewPrompts.makeAgenticDecision(
+    const prompt = InterviewPrompts.makeAgenticDecision(
       context.config,
       context.state.phase,
       context.state.questionsAsked,
@@ -162,8 +202,8 @@ Could you please provide a response that specifically addresses this question ab
       elapsedMinutes
     );
 
-    const response = await this.llm.invoke(promptText);
-    
+    const response = await this.invokeModel(prompt, 1024);
+
     try {
       const decision = JSON.parse(response);
       return {
@@ -189,19 +229,19 @@ Could you please provide a response that specifically addresses this question ab
     context: AgenticPromptContext,
     conversationHistory: Message[]
   ): Promise<string> {
-    let promptText: string;
+    let prompt: string;
     const lastResponse = conversationHistory[conversationHistory.length - 1]?.content || '';
 
     switch (decision.decision) {
       case 'ASK_FOLLOWUP':
-        promptText = InterviewPrompts.generateFollowUpQuestion(context.config, lastResponse);
+        prompt = InterviewPrompts.generateFollowUpQuestion(context.config, lastResponse);
         break;
       case 'CLARIFY':
-        promptText = InterviewPrompts.generateClarificationQuestion(context.config, lastResponse);
+        prompt = InterviewPrompts.generateClarificationQuestion(context.config, lastResponse);
         break;
       case 'CHANGE_PHASE':
         const nextPhase = this.getNextPhase(context.state.phase);
-        promptText = InterviewPrompts.generatePhaseTransition(context.config, context.state.phase, nextPhase);
+        prompt = InterviewPrompts.generatePhaseTransition(context.config, context.state.phase, nextPhase);
         break;
       case 'WRAP_UP':
         // Provide FULL conversation history for personalized wrap-up
@@ -209,13 +249,13 @@ Could you please provide a response that specifically addresses this question ab
         const fullConversationText = fullHistory
           .map(msg => `${msg.role === 'user' ? 'Candidate' : 'Interviewer'}: ${msg.content}`)
           .join('\n\n');
-        promptText = InterviewPrompts.generateWrapUp(context.config, fullConversationText);
+        prompt = InterviewPrompts.generateWrapUp(context.config, fullConversationText);
         break;
       default:
-        promptText = InterviewPrompts.generateNextQuestion(context.config, context.state.phase);
+        prompt = InterviewPrompts.generateNextQuestion(context.config, context.state.phase);
     }
 
-    return await this.llm.invoke(promptText);
+    return await this.invokeModel(prompt);
   }
 
   // Generate practice mode feedback with sample answers
@@ -224,8 +264,8 @@ Could you please provide a response that specifically addresses this question ab
     question: string,
     answer: string
   ): Promise<string> {
-    const promptText = InterviewPrompts.generatePracticeFeedback(config, question, answer);
-    return await this.llm.invoke(promptText);
+    const prompt = InterviewPrompts.generatePracticeFeedback(config, question, answer);
+    return await this.invokeModel(prompt, 3072);
   }
 
   // Generate final evaluation
@@ -237,8 +277,8 @@ Could you please provide a response that specifically addresses this question ab
       .map(msg => `${msg.role === 'user' ? 'Candidate' : 'Interviewer'}: ${msg.content}`)
       .join('\n\n');
 
-    const promptText = InterviewPrompts.generateEvaluation(config, historyText);
-    return await this.llm.invoke(promptText);
+    const prompt = InterviewPrompts.generateEvaluation(config, historyText);
+    return await this.invokeModel(prompt, 4096);
   }
 
   // Helper method - only need this for phase transitions
@@ -249,55 +289,65 @@ Could you please provide a response that specifically addresses this question ab
     return phases[currentIndex + 1] || 'wrap_up';
   }
 
-  // Get time-specific formatting instructions
-  private getTimeFormatInstructions(durationMinutes: number): string {
-    if (durationMinutes <= 5) {
-      return `
-TIME FORMAT (5 minutes - Quick Demo):
-- Introduction: 30 seconds maximum
-- Agenda: "We'll do 1-2 quick questions and wrap up"
-- Questions: 2-3 minutes total (1-2 questions max)
-- Wrap-up: 1 minute with final question
-- Keep everything fast-paced and concise
-      `;
-    } else if (durationMinutes <= 15) {
-      return `
-TIME FORMAT (15 minutes - Short Interview):
-- Introduction: 1 minute
-- Agenda: "We'll cover behavioral questions and one technical area"
-- Questions: 10-12 minutes (3-4 questions)
-- Wrap-up: 2 minutes with candidate questions
-- Keep responses focused and move efficiently
-      `;
-    } else if (durationMinutes <= 30) {
-      return `
-TIME FORMAT (30 minutes - Standard Interview):
-- Introduction: 2-3 minutes
-- Agenda: "We'll cover behavioral, technical, and have time for your questions"
-- Questions: 22-25 minutes (4-6 questions)
-- Wrap-up: 3-5 minutes with detailed candidate Q&A
-- Allow moderate depth in responses
-      `;
-    } else if (durationMinutes <= 45) {
-      return `
-TIME FORMAT (45 minutes - Extended Interview):
-- Introduction: 3-4 minutes
-- Agenda: "We'll cover multiple areas including behavioral, technical, system design, and leadership"
-- Questions: 35-38 minutes (6-8 questions)
-- Wrap-up: 4-7 minutes with thorough candidate Q&A
-- Encourage detailed responses and deep dives
-      `;
-    } else {
-      return `
-TIME FORMAT (60+ minutes - Comprehensive Interview):
-- Introduction: 5 minutes with detailed agenda
-- Agenda: "We'll thoroughly cover all requested interview types with deep technical discussions"
-- Questions: 45-50 minutes (8-10 questions)
-- Wrap-up: 5-10 minutes with comprehensive candidate Q&A about role, company, team
-- Encourage very detailed responses and extensive follow-ups
-      `;
+  // Evaluate whiteboard drawing with vision capabilities
+  async evaluateWhiteboard(
+    config: SessionConfig,
+    question: string,
+    imageBase64: string,
+    explanation?: string
+  ): Promise<string> {
+    try {
+      const payload = {
+        anthropic_version: 'bedrock-2023-05-31',
+        max_tokens: 4096,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: 'image/png',
+                  data: imageBase64,
+                },
+              },
+              {
+                type: 'text',
+                text: InterviewPrompts.evaluateWhiteboard(config, question, explanation),
+              },
+            ],
+          },
+        ],
+        temperature: 0.7,
+        top_p: 0.9,
+      };
+
+      const input: InvokeModelCommandInput = {
+        modelId: this.modelId,
+        contentType: 'application/json',
+        accept: 'application/json',
+        body: JSON.stringify(payload),
+      };
+
+      const command = new InvokeModelCommand(input);
+      const response = await this.client.send(command);
+
+      const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+
+      if (responseBody.content && responseBody.content.length > 0) {
+        return responseBody.content[0].text;
+      }
+
+      return JSON.stringify({
+        error: 'No evaluation generated',
+        message: 'The model did not return a proper evaluation.',
+      });
+    } catch (error) {
+      console.error('Error evaluating whiteboard:', error);
+      throw error;
     }
   }
 }
 
-export default OllamaService;
+export default BedrockService;

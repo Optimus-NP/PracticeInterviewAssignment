@@ -301,8 +301,14 @@
 }
 
 .timestamp {
-  color: #888;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.elapsed-time {
+  color: #10b981;
+  font-weight: 500;
+  margin-left: 4px;
 }
 
 .input-area {

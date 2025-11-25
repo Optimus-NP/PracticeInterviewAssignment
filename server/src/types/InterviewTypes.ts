@@ -108,9 +108,55 @@ export interface OllamaResponse {
   done: boolean;
 }
 
+export interface InterviewPlan {
+  role: string;
+  seniority: string;
+  evaluationCategories: {
+    name: string;
+    description: string;
+    weight: number; // 0-1, sum should be 1
+    keyCompetencies: string[];
+  }[];
+  seniorityExpectations: {
+    depth: string;
+    complexity: string;
+    leadership: string;
+    independence: string;
+  };
+  interviewPhases: {
+    phase: string;
+    duration: number; // in minutes
+    focusAreas: string[];
+    sampleQuestions: string[];
+  }[];
+  scoringRubric: {
+    score: number;
+    description: string;
+    expectations: string[];
+  }[];
+  hiringRecommendationGuidelines: {
+    strongHire: string;
+    hire: string;
+    maybe: string;
+    noHire: string;
+  };
+  generatedAt: Date;
+}
+
+export interface ConversationSummary {
+  timestamp: Date;
+  questionsAsked: number;
+  keyPoints: string[];
+  candidateStrengths: string[];
+  areasToProbe: string[];
+}
+
 export interface AgenticPromptContext {
   config: SessionConfig;
   state: SessionState;
   recentMessages: Message[];
   questionHistory: string[];
+  interviewPlan?: InterviewPlan;
+  conversationSummary?: ConversationSummary; // Summarized history to reduce context
+  fullConversationHistory?: Message[]; // Full history for important decisions
 }

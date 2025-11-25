@@ -88,12 +88,23 @@ async function startServer(): Promise<void> {
     await connectToDatabase();
 
     // Start HTTP server
-    app.listen(PORT, () => {
+    app.listen(PORT, async () => {
       console.log(`Interview Practice Partner API running on port ${PORT}`);
       console.log(`Health check: http://localhost:${PORT}/health`);
       console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`Ollama URL: ${process.env.OLLAMA_BASE_URL || 'http://localhost:11434'}`);
-      console.log(`Model: ${process.env.OLLAMA_MODEL || 'llama2:7b'}`);
+      
+      // Show which LLM service is configured
+      if (process.env.USE_BEDROCK === 'true') {
+        console.log(`LLM Service: AWS Bedrock (Primary)`);
+        console.log(`  Region: ${process.env.AWS_REGION || 'us-west-2'}`);
+        console.log(`  Model: ${process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-5-sonnet-20241022-v2:0'}`);
+        console.log(`  Profile: ${process.env.AWS_PROFILE || 'default'}`);
+        console.log(`  Fallback: Ollama (if Bedrock fails)`);
+      } else {
+        console.log(`LLM Service: Ollama`);
+        console.log(`  URL: ${process.env.OLLAMA_BASE_URL || 'http://localhost:11434'}`);
+        console.log(`  Model: ${process.env.OLLAMA_MODEL || 'llama2:7b'}`);
+      }
     });
 
   } catch (error) {
