@@ -673,7 +673,7 @@ cd ../client && npm run build
 ## Contact & Submission
 
 **GitHub Repository**: [PracticeInterviewAssignment](https://github.com/Optimus-NP/PracticeInterviewAssignment)
-**Demo Video**: [Your demo video URL here] 
+**Demo Video**: [Watch Demo](https://drive.google.com/file/d/10MIx2Zh_HSva-V1HTBRa6JgY4c8NsjjP/view?usp=drive_link)
 **Live Demo**: `http://localhost:3000` (after setup)
 
 **Author**: Naman Pahwa
