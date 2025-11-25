@@ -210,7 +210,8 @@ Could you please provide a response that specifically addresses this question ab
         promptText = InterviewPrompts.generateWrapUp(context.config, fullConversationText);
         break;
       default:
-        promptText = InterviewPrompts.generateNextQuestion(context.config, context.state.phase);
+        const lastUserResponse = conversationHistory.filter(m => m.role === 'user').pop()?.content;
+        promptText = InterviewPrompts.generateNextQuestion(context.config, context.state.phase, lastUserResponse);
     }
 
     return await this.llm.invoke(promptText);

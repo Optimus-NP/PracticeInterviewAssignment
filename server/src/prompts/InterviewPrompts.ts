@@ -439,12 +439,25 @@ CRITICAL: Respond with ONLY valid JSON, no extra text before or after.
   }
 
   /**
-   * Generate next question
+   * Generate next question with context from previous response
    */
-  static generateNextQuestion(config: SessionConfig, phase: string): string {
+  static generateNextQuestion(config: SessionConfig, phase: string, lastResponse?: string): string {
     return `${this.getContext(config)}
 
-Continue the interview (do NOT re-introduce yourself). Ask the next appropriate ${phase} question for ${config.seniority} ${config.role}.
+Continue the interview (do NOT re-introduce yourself).
+
+${lastResponse ? `The candidate just said: "${lastResponse}"
+
+IMPORTANT: Acknowledge what they just mentioned before asking your next question. Build on their response naturally.
+
+For example:
+- If they mentioned a specific approach: "Interesting approach with [their method]. Now let me ask..."
+- If they shared code: "Thank you for walking through that. Let's explore..."
+- If they asked a question: "Good question about [topic]. [Answer briefly]. Now...
+"
+` : ''}
+
+Ask the next appropriate ${phase} question for ${config.seniority} ${config.role}.
 Make it challenging but fair for a ${config.seniority} candidate.
 
 Ask only ONE question.

@@ -261,7 +261,8 @@ Could you please provide a response that specifically addresses this question ab
         prompt = InterviewPrompts.generateWrapUp(context.config, fullConversationText);
         break;
       default:
-        prompt = InterviewPrompts.generateNextQuestion(context.config, context.state.phase);
+        const lastUserResponse = conversationHistory.filter(m => m.role === 'user').pop()?.content;
+        prompt = InterviewPrompts.generateNextQuestion(context.config, context.state.phase, lastUserResponse);
     }
 
     return await this.invokeModel(prompt);

@@ -278,15 +278,21 @@ Next Question: ${practiceEvaluation.nextQuestion}`;
           // Handle different decisions
           switch (decision.decision) {
             case 'WRAP_UP':
-              // Only allow wrap-up if sufficient time has passed OR enough questions asked
-              if (elapsedMinutes >= session.config.durationMinutes * 0.8 || session.state.questionsAsked >= Math.ceil(session.config.durationMinutes / 5)) {
+              // Calculate minimum requirements for wrap-up
+              const minTimeElapsed = session.config.durationMinutes * 0.8; // 80% of time
+              const minQuestions = Math.max(3, Math.ceil(session.config.durationMinutes / 5)); // At least 3 questions
+              
+              // Only allow wrap-up if BOTH time has passed AND enough questions asked
+              const canWrapUp = elapsedMinutes >= minTimeElapsed && session.state.questionsAsked >= minQuestions;
+              
+              if (canWrapUp) {
                 newPhase = 'wrap_up';
                 aiResponse = await this.llmService.generateNextQuestion(decision, context, session.messages);
                 shouldEndSession = true;
-                console.log(`[AGENTIC] Wrapping up - Elapsed: ${elapsedMinutes.toFixed(1)}min of ${session.config.durationMinutes}min`);
+                console.log(`[AGENTIC] Wrapping up - Elapsed: ${elapsedMinutes.toFixed(1)}min of ${session.config.durationMinutes}min, Questions: ${session.state.questionsAsked}`);
               } else {
                 // Override premature wrap-up decision
-                console.log(`[AGENTIC] Overriding premature WRAP_UP - Only ${elapsedMinutes.toFixed(1)}min elapsed of ${session.config.durationMinutes}min`);
+                console.log(`[AGENTIC] Overriding premature WRAP_UP - Only ${elapsedMinutes.toFixed(1)}min/${session.config.durationMinutes}min (need ${minTimeElapsed.toFixed(1)}min) and ${session.state.questionsAsked}/${minQuestions} questions`);
                 newPhase = session.state.phase; // Stay in current phase
                 aiResponse = await this.llmService.generateNextQuestion(
                   { ...decision, decision: 'MOVE_NEXT' },
