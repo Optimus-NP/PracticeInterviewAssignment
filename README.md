@@ -8,9 +8,10 @@ This is a complete **Interview Practice Partner** system that demonstrates advan
 
 - **MERN Stack** (MongoDB, Express, React, Node.js) - All in TypeScript
 - **LangChain.js** - For sophisticated AI agent orchestration
-- **Docker Ollama** - Local AI model execution (100% FREE, no API costs)
+- **AWS Bedrock / Docker Ollama** - Flexible LLM backend (Cloud or Local)
 - **MongoDB Atlas** - Persistent session storage
 - **Agentic Behavior** - AI makes intelligent decisions about follow-ups, phase transitions, and evaluation
+- **Unified LLM Service** - Automatic fallback between cloud and local models
 
 ## Key Features
 
@@ -32,6 +33,8 @@ This is a complete **Interview Practice Partner** system that demonstrates advan
   - **Practice Mode**: Immediate feedback, scores, and 5 sample answers after each response
   - **Mock Interview**: Realistic simulation with final evaluation only
 - **Voice Integration**: Speech-to-text and text-to-speech via browser APIs (100% FREE)
+- **Flexible LLM Backend**: AWS Bedrock (Claude 3.5 Sonnet) or Ollama with automatic fallback
+- **Whiteboard Evaluation**: Vision-based analysis of technical drawings and diagrams
 - **Multi-Phase Interviews**: Warmup → Behavioral → Technical → System Design → Product → Wrap-up
 - **Role-Specific Questions**: Tailored for Software Engineer, Product Manager, Sales, etc.
 - **Seniority Adaptation**: Different complexity for Junior vs Senior candidates
@@ -45,6 +48,7 @@ This is a complete **Interview Practice Partner** system that demonstrates advan
 ## High-Level Architecture
 
 ```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#f0f0f0','primaryTextColor':'#000','primaryBorderColor':'#666','lineColor':'#666','secondaryColor':'#fff','tertiaryColor':'#f9f9f9'}}}%%
 graph TB
     subgraph "Frontend Layer"
         A[React + TypeScript UI] --> B[Voice Controls]
@@ -65,8 +69,8 @@ graph TB
     end
     
     subgraph "AI Models"
-        M[Docker Ollama] --> N[Mistral 7B / CodeLlama 7B]
-        M --> O[Local Model Execution]
+        M[Docker Ollama / AWS Bedrock] --> N[Mistral 7B / Claude 3.5 Sonnet]
+        M --> O[Local or Cloud Execution]
     end
     
     subgraph "Data Layer"
@@ -85,18 +89,6 @@ graph TB
     I -.->|Model Inference| M
     E -.->|Data Persistence| P
     A -.->|Browser APIs| T
-    
-    classDef frontend fill:#e1f5fe
-    classDef backend fill:#f3e5f5
-    classDef ai fill:#e8f5e8
-    classDef data fill:#fff3e0
-    classDef voice fill:#fce4ec
-    
-    class A,B,C,D frontend
-    class E,F,G,H backend
-    class I,J,K,L,M,N,O ai
-    class P,Q,R,S data
-    class T,U,V voice
 ```
 
 ## Design Decisions & Technical Reasoning
@@ -251,18 +243,51 @@ speechSynthesis.speak(utterance);
 - **MongoDB Atlas** account (free tier works)
 - **8GB+ RAM** recommended for AI model
 
-## Quick Start (5 minutes)
+## Quick Start
 
-### 1. Clone and Setup
+### Option A: Using AWS Bedrock (Recommended for Production)
+
+#### 1. Clone and Setup
 ```bash
 git clone https://github.com/Optimus-NP/PracticeInterviewAssignment.git
 cd PracticeInterviewAssignment
-
-# Install all dependencies
 npm run setup
 ```
 
-### 2. Start Docker Ollama
+#### 2. Configure AWS Bedrock
+```bash
+cd server
+cp .env.example .env
+
+# Edit .env and set:
+USE_BEDROCK=
+AWS_REGION=
+AWS_PROFILE=
+BEDROCK_MODEL_ID=
+```
+
+#### 3. Configure AWS Credentials
+```bash
+# Make sure you have AWS credentials configured
+aws configure --profile your-aws-profile
+# Or use ~/.aws/credentials file
+```
+
+#### 4. Start the Application
+```bash
+npm run dev
+```
+
+### Option B: Using Ollama (Free, Local)
+
+#### 1. Clone and Setup
+```bash
+git clone https://github.com/Optimus-NP/PracticeInterviewAssignment.git
+cd PracticeInterviewAssignment
+npm run setup
+```
+
+#### 2. Start Docker Ollama
 ```bash
 # Start Ollama container
 npm run docker:start
@@ -272,11 +297,20 @@ npm run docker:start
 # Choose option 1: mistral:7b (recommended)
 ```
 
-### 3. Environment Configuration
+#### 3. Environment Configuration
 ```bash
-# Server environment is pre-configured in server/.env
-# For production, copy server/.env.example and customize
-cp server/.env.example server/.env
+cd server
+cp .env.example .env
+
+# Edit .env and set:
+USE_BEDROCK=
+OLLAMA_BASE_URL=
+OLLAMA_MODEL=
+```
+
+#### 4. Start the Application
+```bash
+npm run dev
 ```
 
 ### 4. Start the Application
@@ -454,18 +488,154 @@ AI: "I didn't quite understand that response. Could you please rephrase your
      answer about your experience with team leadership?"
 ```
 
+## LLM Backend Options
+
+### AWS Bedrock (Cloud - Recommended for Production)
+
+**Advantages:**
+- **Superior Quality**: Claude 3.5 Sonnet provides excellent reasoning and conversation
+- **Scalability**: Handles unlimited concurrent users
+- **Reliability**: 99.9% uptime SLA
+- **No Infrastructure**: Zero maintenance required
+- **Vision Support**: Can analyze whiteboard drawings and diagrams
+
+**Configuration:**
+```env
+USE_BEDROCK=
+AWS_REGION=
+AWS_PROFILE=
+BEDROCK_MODEL_ID=
+```
+
+**Cost (Claude 3.5 Sonnet):**
+- Input: ~$3.00 per million tokens
+- Output: ~$15.00 per million tokens
+- Typical 30-min interview: ~$0.10-0.20
+- Perfect for production with real users
+
+### Ollama (Local - Free for Development)
+
+**Advantages:**
+- **Zero Cost**: Completely free to run
+- **Privacy**: All data stays local
+- **Offline**: Works without internet
+- **Customizable**: Fine-tune models as needed
+
+**Configuration:**
+```env
+USE_BEDROCK=
+OLLAMA_BASE_URL=
+OLLAMA_MODEL=
+```
+
+**Cost:**
+- **Runtime**: $0
+- **Infrastructure**: Your machine's resources
+- Perfect for development and testing
+
+### Automatic Fallback
+
+The system intelligently handles LLM availability:
+
+```
+USE_BEDROCK=true →
+  1. Try AWS Bedrock first
+  2. If unavailable → Fallback to Ollama
+  3. If both fail → Show error
+
+USE_BEDROCK=false →
+  1. Use Ollama directly
+```
+
+**Logs show active service:**
+```
+🚀 Initializing AWS Bedrock as primary LLM service...
+✅ AWS Bedrock connected successfully
+LLM Service: AWS Bedrock (Primary)
+  Region: us-west-2
+  Model: anthropic.claude-3-5-sonnet-20241022-v2:0
+  Fallback: Ollama (if Bedrock fails)
+```
+
 ## Cost Analysis
 
-| Component | Cost | Notes |
-|-----------|------|-------|
-| **Ollama (Docker)** | **$0** | Runs locally, no API fees |
-| **MongoDB Atlas** | **$0** | Free tier (512MB) |
-| **LangChain.js** | **$0** | Open source |
-| **Total Runtime Cost** | **$0** | Perfect for development & demos |
+| Component | Ollama | AWS Bedrock |
+|-----------|--------|-------------|
+| **LLM Service** | **$0** | ~$0.15/interview |
+| **MongoDB Atlas** | **$0** (free tier) | **$0** (free tier) |
+| **Infrastructure** | Local machine | AWS managed |
+| **Scalability** | Limited | Unlimited |
+| **Total Dev Cost** | **$0** | ~$5-20/month testing |
+| **Total Prod Cost** | **$0** | ~$100-500/month (1000 users) |
 
-Compare to OpenAI API: $0.002 per 1K tokens ≈ $5-20 for full testing.
+**Recommendation**: 
+- **Development**: Use Ollama (free)
+- **Production**: Use Bedrock (quality + scale)
+
+## Advanced Features
+
+### Whiteboard Evaluation (Bedrock Only)
+
+The system can analyze technical drawings using Claude's vision capabilities:
+
+```typescript
+const evaluation = await llmService.evaluateWhiteboard(
+  config,              // Interview configuration
+  question,            // The whiteboard question
+  imageBase64,         // Drawing as base64 encoded image
+  explanation          // Optional: candidate's verbal explanation
+);
+```
+
+**Evaluates:**
+- Correctness of solution
+- Design quality and architecture
+- Technical depth for seniority level
+- Communication clarity
+- Completeness of solution
+
+**Provides:**
+- Scores for each dimension (1-5)
+- Detailed feedback
+- Improvement suggestions
+- Follow-up probing questions
+
+### Dynamic Role & Seniority Evaluation
+
+The LLM generates custom interview plans for each role + seniority combination:
+
+**For Senior Software Engineer:**
+- Evaluation Categories: Technical Architecture (35%), Implementation (30%), Leadership (35%)
+- Expectations: "Deep expertise, handle ambiguity, mentor others"
+- Scoring: Adjusted for senior-level depth
+
+**For Junior Product Manager:**
+- Evaluation Categories: Product Sense (40%), Data Analysis (30%), Communication (30%)
+- Expectations: "Solid fundamentals, learning stakeholder management"
+- Scoring: Adjusted for junior-level learning
+
+### Centralized Prompt System
+
+All prompts are in `server/src/prompts/InterviewPrompts.ts` - single source of truth that includes:
+- Role-specific expectations
+- Seniority-adjusted criteria
+- Company context
+- Interview type focus
+- Time constraints
 
 ## Troubleshooting
+
+### Bedrock Connection Issues
+```bash
+# Check AWS credentials
+aws sts get-caller-identity --profile your-profile
+
+# Check Bedrock access
+aws bedrock list-foundation-models --region us-west-2
+
+# Enable model access in AWS Console
+# Go to Bedrock → Model access → Enable Claude models
+```
 
 ### Ollama Connection Issues
 ```bash
